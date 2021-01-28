@@ -53,6 +53,7 @@ type (
 		DefaultDisposition DispositionAction
 		Closed             bool
 		doneRefreshingAuth func()
+		authRefreshErr     chan error
 	}
 
 	// ReceiverOption provides a structure for configuring receivers
@@ -103,10 +104,11 @@ func (ns *Namespace) NewReceiver(ctx context.Context, entityPath string, opts ..
 	defer span.End()
 
 	r := &Receiver{
-		namespace:  ns,
-		entityPath: entityPath,
-		mode:       PeekLockMode,
-		prefetch:   1,
+		namespace:      ns,
+		entityPath:     entityPath,
+		mode:           PeekLockMode,
+		prefetch:       1,
+		authRefreshErr: make(chan error),
 	}
 
 	for _, opt := range opts {
@@ -308,6 +310,9 @@ func (r *Receiver) listenForMessages(ctx context.Context, msgChan chan *amqp.Mes
 			tab.For(ctx).Debug("context done")
 			close(msgChan)
 			return
+		case err = <-r.authRefreshErr:
+			r.setLastError(err)
+			return
 		default:
 			_, retryErr := common.Retry(10, 10*time.Second, func() (interface{}, error) {
 				ctx, sp := r.startConsumerSpanFromContext(ctx, "sb.Receiver.listenForMessages.tryRecover")
@@ -470,6 +475,7 @@ func (r *Receiver) periodicallyRefreshAuth() {
 
 		if r.client != nil {
 			if err := r.namespace.negotiateClaim(ctx, r.client, r.entityPath); err != nil {
+				r.authRefreshErr <- err
 				tab.For(ctx).Error(err)
 			}
 		}
