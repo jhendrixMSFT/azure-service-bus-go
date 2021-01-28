@@ -47,6 +47,7 @@ type (
 		Name               string
 		sessionID          *string
 		doneRefreshingAuth func()
+		authRefreshErr     chan error
 	}
 
 	// SendOption provides a way to customize a message on sending
@@ -68,8 +69,9 @@ func (ns *Namespace) NewSender(ctx context.Context, entityPath string, opts ...S
 	defer span.End()
 
 	s := &Sender{
-		namespace:  ns,
-		entityPath: entityPath,
+		namespace:      ns,
+		entityPath:     entityPath,
+		authRefreshErr: make(chan error),
 	}
 
 	for _, opt := range opts {
@@ -217,6 +219,8 @@ func (s *Sender) trySend(ctx context.Context, evt eventer) error {
 			if err = ctx.Err(); err != nil {
 				tab.For(ctx).Error(err)
 			}
+			return err
+		case err = <-s.authRefreshErr:
 			return err
 		default:
 			// try as long as the context is not dead
@@ -377,6 +381,7 @@ func (s *Sender) periodicallyRefreshAuth() {
 
 		if r.client != nil {
 			if err := r.namespace.negotiateClaim(ctx, r.client, r.entityPath); err != nil {
+				s.authRefreshErr <- err
 				tab.For(ctx).Error(err)
 			}
 		}
